@@ -269,6 +269,9 @@ typedef enum : NSUInteger {
     } else if ([source isKindOfClass:[NSData class]]) {
         [self _renderWithOpcode:source];
     }
+
+    CGRect windowRect = [UIApplication sharedApplication].keyWindow.bounds;
+    [WXCoreBridge setDeviceWidth: windowRect.size.width];
 }
 
 - (NSString*) bundleTemplate
