@@ -40,6 +40,7 @@
 #import "WXRootView.h"
 #import "WXComponent+Layout.h"
 #import "WXCoreBridge.h"
+#import "WXComponent_performance.h"
 
 static NSThread *WXComponentThread;
 
@@ -89,7 +90,11 @@ static NSThread *WXComponentThread;
         pthread_mutexattr_init(&_propertMutexAttr);
         pthread_mutexattr_settype(&_propertMutexAttr, PTHREAD_MUTEX_RECURSIVE);
         pthread_mutex_init(&_propertyMutex, &_propertMutexAttr);
-        [self _startDisplayLink];
+        
+        WXPerformBlockOnComponentThread(^{
+            // We should ensure that [WXDisplayLinkManager sharedInstance] is only invoked in component thread.
+            [self _startDisplayLink];
+        });
     }
     
     return self;
@@ -275,6 +280,12 @@ static NSThread *WXComponentThread;
         index = 0;
     } else {
         index = (index == -1 ? supercomponent->_subcomponents.count : index);
+    }
+    if (supercomponent.ignoreInteraction) {
+        component.ignoreInteraction = YES;
+    }
+    if ([[component.attributes objectForKey:@"ignoreInteraction"] isEqualToString:@"1"]) {
+        component.ignoreInteraction = YES;
     }
     
 #ifdef DEBUG
