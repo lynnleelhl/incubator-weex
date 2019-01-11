@@ -42,9 +42,7 @@
 #import "WXTextComponent.h"
 #import "WXConvert.h"
 #import "WXPrerenderManager.h"
-#import "WXTracingManager.h"
 #import "WXJSExceptionProtocol.h"
-#import "WXTracingManager.h"
 #import "WXExceptionUtils.h"
 #import "WXMonitor.h"
 #import "WXBridgeContext.h"
@@ -142,7 +140,7 @@ typedef enum : NSUInteger {
     }
     
     // WXDebugger is a singleton actually and should not call its init twice.
-    _instanceJavaScriptContext = _debugJS ? [NSClassFromString(@"WXDebugger") alloc] : [[WXJSCoreBridge alloc] init];
+    _instanceJavaScriptContext = _debugJS ? [NSClassFromString(@"WXDebugger") alloc] : [[WXJSCoreBridge alloc] initWithoutDefaultContext];
     if (!_debugJS) {
         id<WXBridgeProtocol> jsBridge = [[WXSDKManager bridgeMgr] valueForKeyPath:@"bridgeCtx.jsBridge"];
         JSContext* globalContex = jsBridge.javaScriptContext;
@@ -191,7 +189,7 @@ typedef enum : NSUInteger {
         CGFloat screenHeight =  [[UIScreen mainScreen] bounds].size.height;
         if (screenHeight>0) {
             CGFloat pageRatio = frame.size.height/screenHeight *100;
-            self.apmInstance.wxPageRatio = pageRatio>100?100:pageRatio;
+            self.apmInstance.pageRatio = pageRatio>100?100:pageRatio;
         }
         WXPerformBlockOnMainThread(^{
             if (_rootView) {
@@ -242,7 +240,6 @@ typedef enum : NSUInteger {
     self.needValidate = [[WXHandlerFactory handlerForProtocol:@protocol(WXValidateProtocol)] needValidate:url];
     WXResourceRequest *request = [WXResourceRequest requestWithURL:url resourceType:WXResourceTypeMainBundle referrer:@"" cachePolicy:NSURLRequestUseProtocolCachePolicy];
     [self _renderWithRequest:request options:options data:data];
-    [WXTracingManager startTracingWithInstanceId:self.instanceId ref:nil className:nil name:WXTNetworkHanding phase:WXTracingBegin functionName:@"renderWithURL" options:@{@"bundleUrl":url?[url absoluteString]:@"",@"threadName":WXTMainThread}];
 }
 
 - (void)renderView:(id)source options:(NSDictionary *)options data:(id)data
@@ -251,14 +248,10 @@ typedef enum : NSUInteger {
     _jsData = data;
     
     self.needValidate = [[WXHandlerFactory handlerForProtocol:@protocol(WXValidateProtocol)] needValidate:self.scriptURL];
-    if (self.dataRender) {
-        [self.apmInstance setProperty:KEY_PAGE_PROPERTIES_RENDER_TYPE withValue:@"wxEagle"];
-    }
 
     if ([source isKindOfClass:[NSString class]]) {
         WXLogDebug(@"Render source: %@, data:%@", self, [WXUtility JSONString:data]);
         [self _renderWithMainBundleString:source];
-        [WXTracingManager setBundleJSType:source instanceId:self.instanceId];
     } else if ([source isKindOfClass:[NSData class]]) {
         [self _renderWithData:source];
     }
@@ -287,6 +280,9 @@ typedef enum : NSUInteger {
     //some case , with out render (url)
     [self.apmInstance startRecord:self.instanceId];
     self.apmInstance.isStartRender = YES;
+    if (self.dataRender) {
+        [self.apmInstance setProperty:KEY_PAGE_PROPERTIES_RENDER_TYPE withValue:@"eagle"];
+    }
 
     self.performance.renderTimeOrigin = CACurrentMediaTime()*1000;
     self.performance.renderUnixTimeOrigin = [WXUtility getUnixFixTimeMillis];
@@ -339,11 +335,9 @@ typedef enum : NSUInteger {
         return;
     }
 
-    [WXTracingManager startTracingWithInstanceId:self.instanceId ref:nil className:nil name:WXTExecJS phase:WXTracingBegin functionName:@"_renderWithData" options:@{@"threadName":WXTMainThread}];
     [[WXSDKManager bridgeMgr] createInstance:self.instanceId contents:contents options:dictionary data:_jsData];
-    [WXTracingManager startTracingWithInstanceId:self.instanceId ref:nil className:nil name:WXTExecJS phase:WXTracingEnd functionName:@"_renderWithData" options:@{@"threadName":WXTMainThread}];
 
-   // WX_MONITOR_PERF_SET(WXPTBundleSize, [data length], self);
+    // WX_MONITOR_PERF_SET(WXPTBundleSize, [data length], self);
     _isRendered = YES;
 }
 
@@ -363,6 +357,9 @@ typedef enum : NSUInteger {
     [self _checkPageName];
     [self.apmInstance startRecord:self.instanceId];
     self.apmInstance.isStartRender = YES;
+    if (self.dataRender) {
+        [self.apmInstance setProperty:KEY_PAGE_PROPERTIES_RENDER_TYPE withValue:@"eagle"];
+    }
     
     self.performance.renderTimeOrigin = CACurrentMediaTime()*1000;
     self.performance.renderUnixTimeOrigin = [WXUtility getUnixFixTimeMillis];
@@ -429,9 +426,7 @@ typedef enum : NSUInteger {
         return;
     }
     
-    [WXTracingManager startTracingWithInstanceId:self.instanceId ref:nil className:nil name:WXTExecJS phase:WXTracingBegin functionName:@"renderWithMainBundleString" options:@{@"threadName":WXTMainThread}];
     [[WXSDKManager bridgeMgr] createInstance:self.instanceId template:mainBundleString options:dictionary data:_jsData];
-    [WXTracingManager startTracingWithInstanceId:self.instanceId ref:nil className:nil name:WXTExecJS phase:WXTracingEnd functionName:@"renderWithMainBundleString" options:@{@"threadName":WXTMainThread}];
     
     WX_MONITOR_PERF_SET(WXPTBundleSize, [mainBundleString lengthOfBytesUsingEncoding:NSUTF8StringEncoding], self);
     
@@ -441,41 +436,17 @@ typedef enum : NSUInteger {
 - (BOOL)_handleConfigCenter
 {
     id configCenter = [WXSDKEngine handlerForProtocol:@protocol(WXConfigCenterProtocol)];
-    if ([configCenter respondsToSelector:@selector(configForKey:defaultValue:isDefault:)]) {
-        BOOL useCoreText = [[configCenter configForKey:@"iOS_weex_ext_config.text_render_useCoreText" defaultValue:@YES isDefault:NULL] boolValue];
-        [WXTextComponent setRenderUsingCoreText:useCoreText];
-        
-        BOOL unregisterFontWhenCollision = [[configCenter configForKey:@"iOS_weex_ext_config.unregisterFontWhenCollision" defaultValue:@NO isDefault:NULL] boolValue];
-        [WXUtility setUnregisterFontWhenCollision:unregisterFontWhenCollision];
-        
-        BOOL useJSCApiForCreateInstance = [[configCenter configForKey:@"iOS_weex_ext_config.useJSCApiForCreateInstance" defaultValue:@(YES) isDefault:NULL] boolValue];
-        [WXUtility setUseJSCApiForCreateInstance:useJSCApiForCreateInstance];
-		
+    if ([configCenter respondsToSelector:@selector(configForKey:defaultValue:isDefault:)]) {		
         BOOL enableRTLLayoutDirection = [[configCenter configForKey:@"iOS_weex_ext_config.enableRTLLayoutDirection" defaultValue:@(YES) isDefault:NULL] boolValue];
         [WXUtility setEnableRTLLayoutDirection:enableRTLLayoutDirection];
-
-        BOOL shoudMultiContext = NO;
-        shoudMultiContext = [[configCenter configForKey:@"iOS_weex_ext_config.createInstanceUsingMutliContext" defaultValue:@(YES) isDefault:NULL] boolValue];
-        if(shoudMultiContext && ![WXSDKManager sharedInstance].multiContext) {
-            [WXSDKManager sharedInstance].multiContext = YES;
-            [[NSUserDefaults standardUserDefaults] setObject:@"1" forKey:@"createInstanceUsingMutliContext"];
-            [WXSDKEngine restart];
-            return YES;
-        }
-        if (!shoudMultiContext && [WXSDKManager sharedInstance].multiContext) {
-            [WXSDKManager sharedInstance].multiContext = NO;
-            [[NSUserDefaults standardUserDefaults] setObject:@"0" forKey:@"createInstanceUsingMutliContext"];
-            [WXSDKEngine restart];
-            return YES;
-        }
     }
     return NO;
 }
 
-- (void)renderWithMainBundleString:(NSNotification*)notification {
+- (void)renderWithMainBundleString:(NSNotification*)notification
+{
     [self _renderWithMainBundleString:_mainBundleString];
 }
-
 
 - (void)_renderWithRequest:(WXResourceRequest *)request options:(NSDictionary *)options data:(id)data;
 {
@@ -488,7 +459,11 @@ typedef enum : NSUInteger {
         newOptions[bundleUrlOptionKey] = url.absoluteString;
     }
 
-    if ([url.absoluteString hasSuffix:WEEX_LITE_URL_SUFFIX]) {
+    if ( [url.absoluteString containsString:@"__data_render=true"]) {
+        newOptions[@"DATA_RENDER"] = @(YES);
+    }
+
+    if ([url.absoluteString hasSuffix:WEEX_LITE_URL_SUFFIX] || [url.absoluteString containsString:@"__eagle=true"]) {
         newOptions[@"WLASM_RENDER"] = @(YES);
     }
 
@@ -498,9 +473,6 @@ typedef enum : NSUInteger {
         newOptions[bundleUrlOptionKey] = ((NSURL*)newOptions[bundleUrlOptionKey]).absoluteString;
     }
     _options = [newOptions copy];
-    if (self.dataRender) {
-        [self.apmInstance setProperty:KEY_PAGE_PROPERTIES_RENDER_TYPE withValue:@"wxEagle"];
-    }
     request.userAgent = [WXUtility userAgent];
     
     WX_MONITOR_INSTANCE_PERF_START(WXPTJSDownload, self);
@@ -552,7 +524,7 @@ typedef enum : NSUInteger {
             return;
         }
         
-        if (([options[@"DATA_RENDER"] boolValue] && [options[@"RENDER_WITH_BINARY"] boolValue]) || [options[@"WLASM_RENDER"] boolValue]) {
+        if (([newOptions[@"DATA_RENDER"] boolValue] && [newOptions[@"RENDER_WITH_BINARY"] boolValue]) || [newOptions[@"WLASM_RENDER"] boolValue]) {
             [strongSelf _renderWithData:data];
             return;
         }
@@ -581,14 +553,11 @@ typedef enum : NSUInteger {
                 return;
             }
         }
-      
         
         [strongSelf.apmInstance onStage:KEY_PAGE_STAGES_DOWN_BUNDLE_END];
         [strongSelf.apmInstance updateExtInfoFromResponseHeader:response.allHeaderFields];
         [strongSelf _renderWithMainBundleString:jsBundleString];
-        [WXTracingManager setBundleJSType:jsBundleString instanceId:weakSelf.instanceId];
         [WXMonitor performanceFinishWithState:DebugAfterRequest instance:strongSelf];
-    
     };
     
     _mainBundleLoader.onFailed = ^(NSError *loadError) {
@@ -655,8 +624,6 @@ typedef enum : NSUInteger {
         [pageEvent pageDestroy:self.instanceId];
     }
     [[NSNotificationCenter defaultCenter] postNotificationName:WX_INSTANCE_WILL_DESTROY_NOTIFICATION object:nil userInfo:@{@"instanceId":self.instanceId}];
-    
-    [WXTracingManager destroyTraincgTaskWithInstance:self.instanceId];
 
     [WXPrerenderManager removePrerenderTaskforUrl:[self.scriptURL absoluteString]];
     [WXPrerenderManager destroyTask:self.instanceId];
